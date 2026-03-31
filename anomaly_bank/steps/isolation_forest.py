@@ -78,15 +78,17 @@ class IsolationForestPreprocess():
         self.engineer_features()
         self.aggregate_features()
         self.feat_columns
-        return self.enriched_df, self.feat_columns
+        return self.raw_df, self.enriched_df, self.feat_columns
 
 
 class IsolationForestModel():
     def __init__(self, 
                  config_path: str,
+                 raw_df: pd.DataFrame,
                  enriched_df: pd.DataFrame,
                  feat_columns: list):
         self.config = imports.import_yml(config_path)
+        self.raw_df = raw_df
         self.enriched_df = enriched_df
         self.all_feat_columns = feat_columns
 
@@ -127,6 +129,7 @@ class IsolationForestModel():
         anomaly_aggs_df = self.compute_anomaly_stats(isolation_df, self.all_feat_columns)
 
         # loop through number of features by importance
+        print(f"Iterating through {len(importance_df)} feature counts to find best model...")
         for i in range(0, len(importance_df)-1):
             selected_features = importance_df.iloc[0:i+1]['feature'].to_list()
             # print(f"Running model with top {i} features, features: {selected_features}")
@@ -139,11 +142,20 @@ class IsolationForestModel():
     def select_best_features(self, anomaly_aggs_df: pd.DataFrame):
         best_row = anomaly_aggs_df.loc[anomaly_aggs_df['anomaly_final_score'].idxmax()]
         best_features = best_row['feat_columns']
-        print(best_row)
+        print(f"Model features with best params: {best_row}")
         return best_features
+    
+    def post_process_results(self, isolation_df: pd.DataFrame):
+        columns = self.raw_df.columns.tolist() 
+        labeled_raw_df = self.raw_df.merge(isolation_df[columns + ['Anomaly', 'AnomalyScore']].rename(columns={'Anomaly': 'IsolationForest_Anomaly',
+                                                                                                               'AnomalyScore': 'IsolationForest_AnomalyScore', }), how='left', on=columns)
+        labeled_raw_df.loc[labeled_raw_df['IsolationForest_Anomaly'] == 1, 'IsolationForest_Anomaly'] = 0
+        labeled_raw_df.loc[labeled_raw_df['IsolationForest_Anomaly'] == -1, 'IsolationForest_Anomaly'] = 1
+        return labeled_raw_df
 
     def _execute(self):
         anomaly_aggs_df = self.iterate_features_in_model()
         best_features = self.select_best_features(anomaly_aggs_df)
         isolation_model, isolation_df, data_arr = self.run_model(feat_columns=best_features)
-        return best_features, anomaly_aggs_df, isolation_model, isolation_df, data_arr
+        labeled_raw_df = self.post_process_results(isolation_df)
+        return anomaly_aggs_df, isolation_df, labeled_raw_df
