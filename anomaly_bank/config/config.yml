@@ -22,6 +22,7 @@ isolation_forest:
       - TransactionDuration
       - LoginAttempts
       - CustomerAge
+      - diff_days
     datetime_columns:
       - TransactionDate
       - PreviousTransactionDate
@@ -34,3 +35,36 @@ isolation_forest:
       median_weight: 0.4
       mean_weight: 0.4
       stdev_weight: -0.2
+
+xgboost:
+  features:
+    target_encoding_columns:
+      - MerchantID
+      - Location
+      - IP_Address
+      - IP_prefix_1
+    target_encoding_columns:
+      - CustomerID
+      - DeviceID
+    one_hot_encoding_columns:
+      - TransactionType
+      - Channel
+      - CustomerOccupation
+    hash_columns:
+      - name: DeviceID
+        n_features: 10
+    numerical_columns:
+      - TransactionAmount
+      - AccountBalance
+      - TransactionDuration
+      - LoginAttempts
+      - CustomerAge
+    datetime_columns:
+      - TransactionDate
+      - PreviousTransactionDate
+  model:
+    n_estimators: 200
+    learning_rate: 0.05
+    max_depth: 6
+    random_state: 42
+    test_size: 0.2

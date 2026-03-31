@@ -1,4 +1,6 @@
 import pandas as pd
+import numpy as np
+from sklearn.model_selection import KFold
 from sklearn.feature_extraction import FeatureHasher
 
 
@@ -14,18 +16,48 @@ def frequency_encoding_column(df: pd.DataFrame, column_name: str) -> pd.DataFram
     return df, freq_column
 
 
-def target_encoding_column(df: pd.DataFrame, column_name: str, target_name: str) -> pd.DataFrame:
-    # groupby by column and calc target ratio
-    freq_column = f'{column_name}_target_freq'
-    gb_df = df.groupby(column_name, as_index=False).agg(counter=(target_name, 'count'),
-                                                        target_sum=(target_name, 'sum'),
-                                                        )
-    gb_df[freq_column] = gb_df['target_sum'] / gb_df['counter'].sum()
-    gb_df = gb_df.drop(columns={['target_sum', 'counter']})
+def target_encoding_kfold(
+    df: pd.DataFrame, 
+    column_name: str, 
+    target_name: str, 
+    n_splits: int = 5, 
+    alpha: float = 1.0,
+    random_state: int = 42
+) -> pd.DataFrame:
+    """
+    Perform K-fold target encoding for a categorical column.
 
-    # merge target ratio to original df
-    df = df.merge(gb_df, how='inner', on=column_name)
-    return df, freq_column
+    Parameters:
+    - df: input dataframe
+    - column_name: categorical column to encode
+    - target_name: target column
+    - n_splits: number of folds
+    - alpha: smoothing factor
+    - random_state: random seed for reproducibility
+
+    Returns:
+    - df with new column "<column_name>_te"
+    """
+    df = df.copy()
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    new_col = f"{column_name}_te"
+    df[new_col] = np.nan
+    global_mean = df[target_name].mean()
+
+    for train_idx, val_idx in kf.split(df):
+        train, val = df.iloc[train_idx], df.iloc[val_idx]
+
+        # Compute target mean and count per category in training fold
+        stats = train.groupby(column_name)[target_name].agg(['mean', 'count']).reset_index()
+        
+        # Apply smoothing
+        stats['smoothed'] = (stats['mean'] * stats['count'] + global_mean * alpha) / (stats['count'] + alpha)
+        
+        # Map to validation fold
+        mapping = dict(zip(stats[column_name], stats['smoothed']))
+        df.loc[val_idx, new_col] = df.loc[val_idx, column_name].map(mapping).fillna(global_mean)
+
+    return df
 
 
 def one_hot_encoding_column(df: pd.DataFrame, column_name: str):
