@@ -88,3 +88,69 @@ def extract_ip_prefix(df, column_name, num_levels=1):
     df[f'IP_prefix_{num_levels}'] = df[column_name].astype(str).apply(lambda x: '.'.join(x.split('.')[:num_levels]))
     return df
 
+
+def haversine_distance_column(df: pd.DataFrame, lat1_col: str, lon1_col: str, lat2_col: str, lon2_col: str,
+                               out_col: str = 'geo_distance_km') -> tuple:
+    """Great-circle distance in km between two lat/long pairs on each row."""
+    R = 6371.0
+    lat1, lon1, lat2, lon2 = (np.radians(df[c].astype(float)) for c in (lat1_col, lon1_col, lat2_col, lon2_col))
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    df[out_col] = R * 2 * np.arcsin(np.sqrt(a))
+    return df, out_col
+
+
+def rolling_count_velocity(df: pd.DataFrame, entity_col: str, time_col: str, window: str,
+                            out_col: str = None) -> tuple:
+    """Count of this entity's prior rows in the trailing `window` before each row (excludes the row itself)."""
+    out_col = out_col or f"{entity_col}_count_{window}"
+    df = df.sort_values(time_col).reset_index(drop=True)
+    tmp = df[[entity_col, time_col]].copy()
+    tmp['_one'] = 1
+    counts = (
+        tmp.set_index(time_col)
+           .groupby(entity_col)['_one']
+           .rolling(window, closed='left')
+           .sum()
+           .reset_index(level=0, drop=True)
+    )
+    df[out_col] = counts.values
+    df[out_col] = df[out_col].fillna(0)
+    return df, out_col
+
+
+def rolling_amount_velocity(df: pd.DataFrame, entity_col: str, time_col: str, value_col: str, window: str,
+                             out_col: str = None) -> tuple:
+    """Sum of this entity's prior `value_col` in the trailing `window` before each row (excludes the row itself)."""
+    out_col = out_col or f"{entity_col}_{value_col}_sum_{window}"
+    df = df.sort_values(time_col).reset_index(drop=True)
+    tmp = df[[entity_col, time_col, value_col]].copy()
+    sums = (
+        tmp.set_index(time_col)
+           .groupby(entity_col)[value_col]
+           .rolling(window, closed='left')
+           .sum()
+           .reset_index(level=0, drop=True)
+    )
+    df[out_col] = sums.values
+    df[out_col] = df[out_col].fillna(0)
+    return df, out_col
+
+
+def expanding_zscore(df: pd.DataFrame, entity_col: str, time_col: str, value_col: str,
+                      out_col: str = None, min_periods: int = 2) -> tuple:
+    """Z-score of value_col against this entity's own PRIOR history only (expanding window,
+    excludes the current row) — how unusual this value is for this entity, with no lookahead.
+    Rows with fewer than min_periods prior observations (cold start) get a neutral 0."""
+    out_col = out_col or f"{value_col}_zscore_{entity_col}"
+    df = df.sort_values(time_col).reset_index(drop=True)
+    grouped = df.groupby(entity_col)[value_col]
+    prior = grouped.shift(1)
+    prior_mean = prior.groupby(df[entity_col]).expanding(min_periods=min_periods).mean().reset_index(level=0, drop=True)
+    prior_std = prior.groupby(df[entity_col]).expanding(min_periods=min_periods).std().reset_index(level=0, drop=True)
+
+    df[out_col] = (df[value_col] - prior_mean) / prior_std.replace(0, pd.NA)
+    df[out_col] = df[out_col].fillna(0)
+    return df, out_col
+

@@ -31,8 +31,17 @@ def run_isolation_forest(df: pd.DataFrame,
 
     return model, df, data_arr
 
+def score_isolation_forest(model, df: pd.DataFrame, features: list) -> pd.DataFrame:
+    """Score new data with an already-fitted IsolationForest, without refitting."""
+    df = df.copy()
+    data_arr = df[features].fillna(0)
+    df['Anomaly'] = model.predict(data_arr)
+    df['AnomalyScore'] = -model.decision_function(data_arr)
+    return df
+
+
 def compute_shap_values(model, data_arr, features):
-    explainer = shap.Explainer(model, data_arr)
+    explainer = shap.TreeExplainer(model)
     shap_values = explainer(data_arr)
 
     # Mean absolute SHAP values for global feature importance
@@ -44,17 +53,73 @@ def compute_shap_values(model, data_arr, features):
     return importance_df
 
 
-def split_data(df, test_size=0.2, random_state=42):
+def compute_shap_explanation(model, data_arr, features):
+    """Per-row SHAP values (not aggregated) for the given model, used to explain individual predictions."""
+    explainer = shap.TreeExplainer(model)
+    return explainer(data_arr)
+
+
+def summarize_shap_reasons(shap_explanation, top_n: int = 3, min_abs_shap: float = 1.0) -> pd.Series:
+    """For each row, up to top_n features driving its score: name, actual value, and signed SHAP contribution.
+
+    Only features whose |SHAP| clears min_abs_shap are included, so weak/incidental
+    contributors (e.g. a one-hot flag with a small nudge) don't clutter genuinely strong reasons.
+    Rows with no feature clearing the bar get a fallback message.
+    """
+    features = shap_explanation.feature_names
+    shap_df = pd.DataFrame(shap_explanation.values, columns=features)
+    data_df = pd.DataFrame(shap_explanation.data, columns=features)
+
+    def format_val(v: float) -> str:
+        return f"{v:.0f}" if float(v).is_integer() else f"{v:.2f}"
+
+    def top_reasons(idx):
+        row = shap_df.loc[idx]
+        ranked = row.reindex(row.abs().sort_values(ascending=False).index)
+        ranked = ranked[ranked.abs() >= min_abs_shap].head(top_n)
+        if len(ranked) == 0:
+            return "no single dominant driver (all contributions below threshold)"
+        return "; ".join(f"{feat}={format_val(data_df.loc[idx, feat])} ({val:+.3f})" for feat, val in ranked.items())
+
+    return pd.Series([top_reasons(idx) for idx in shap_df.index], index=shap_df.index)
+
+
+def split_data(df, target_col: str, test_size=0.2, random_state=42):
         """Split data into training and testing sets."""
-        features = [col for col in df.columns if col != "churn"]
+        features = [col for col in df.columns if col != target_col]
         X = df[features]
-        y = df['churn']
+        y = df[target_col]
 
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, stratify=y, random_state=random_state
         )
         return X_train, X_test, y_train, y_test
     
+
+def compute_tree_agreement(model, data_arr) -> pd.DataFrame:
+    """Per-row confidence signal from how much the ensemble's individual trees agree.
+
+    Each tree in an IsolationForest isolates a row after some number of splits (its depth).
+    Averaging depth across trees gives the score; the *spread* across trees is a separate
+    signal the score alone doesn't carry: low std means every tree isolated this row similarly
+    (confident), high std means trees disagree (a borderline call, often driven by a feature
+    that only some trees happened to split on).
+    """
+    X = data_arr.values if hasattr(data_arr, 'values') else np.asarray(data_arr)
+    depths = np.vstack([
+        np.asarray(est.decision_path(X).sum(axis=1)).ravel() - 1
+        for est in model.estimators_
+    ])  # shape: (n_estimators, n_samples)
+
+    tree_depth_std = depths.std(axis=0)
+    confidence = pd.Series(-tree_depth_std).rank(pct=True) * 100  # 0-100, higher = more tree agreement
+
+    return pd.DataFrame({
+        'TreeDepthMean': depths.mean(axis=0),
+        'TreeDepthStd': tree_depth_std,
+        'Confidence': confidence.values,
+    })
+
 
 def smote_resample(X_train, y_train, random_state=42):
     """Apply SMOTE to balance the training data."""

@@ -13,9 +13,6 @@ isolation_forest:
       - TransactionType
       - Channel
       - CustomerOccupation
-    hash_columns:
-      - name: DeviceID
-        n_features: 10
     numerical_columns:
       - TransactionAmount
       - AccountBalance
@@ -36,6 +33,55 @@ isolation_forest:
       mean_weight: 0.4
       stdev_weight: -0.2
 
+fraud_test:
+  data:
+    path:  # split into 2 parts to stay under a 90MB-per-file limit; utils/imports.py::import_csv concatenates them
+      - "data/fraudTest_part1.csv"
+      - "data/fraudTest_part2.csv"
+  target_col: is_fraud
+  features:
+    time_col: trans_date_trans_time
+    dob_col: dob
+    id_col: trans_num
+    geo:
+      customer_lat: lat
+      customer_long: long
+      merchant_lat: merch_lat
+      merchant_long: merch_long
+    velocity:
+      entity_col: cc_num
+      amount_col: amt
+      windows:
+        - "1h"
+        - "24h"
+    target_encoding_columns:
+      - merchant
+      - category
+    freq_encoding_columns:
+      - state
+    one_hot_encoding_columns:
+      - gender
+    numerical_columns:
+      - amt
+      - city_pop
+  isolation_forest:
+    n_estimators: 100
+    max_samples: "auto"
+    contamination: 0.00386
+    random_state: 42
+  xgboost:
+    n_estimators: 200
+    learning_rate: 0.05
+    max_depth: 6
+    random_state: 42
+    test_size: 0.2
+  routing:
+    # cost-optimal 3-tier thresholds on the raw XGBoost score, chosen via
+    # elbow search over a log-scaled false-decline cost model.
+    # Full reasoning: research/cost_model_findings.md
+    pass_threshold: 0.69
+    decline_threshold: 0.95
+
 xgboost:
   features:
     target_encoding_columns:
@@ -43,22 +89,17 @@ xgboost:
       - Location
       - IP_Address
       - IP_prefix_1
-    target_encoding_columns:
-      - CustomerID
-      - DeviceID
     one_hot_encoding_columns:
       - TransactionType
       - Channel
       - CustomerOccupation
-    hash_columns:
-      - name: DeviceID
-        n_features: 10
     numerical_columns:
       - TransactionAmount
       - AccountBalance
       - TransactionDuration
       - LoginAttempts
       - CustomerAge
+      - diff_days
     datetime_columns:
       - TransactionDate
       - PreviousTransactionDate
